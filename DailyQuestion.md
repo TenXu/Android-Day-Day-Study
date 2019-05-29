@@ -157,5 +157,68 @@ Activity、Service的context生命周期和Activity、Service一样；
 
 [Android Context完全解析，你所不知道的Context的各种细节](https://blog.csdn.net/guolin_blog/article/details/47028975)
 
+### 11.每日一题：如何解决rxjava2当中，Observable的背压问题
+- 1.首先，第一点我们要知道什么是背压，背压是当数据的输入大于数据的处理速度而产生的，这个“大于”可以理解为数据量、输入时间快于处理速度等，更直接的理解就是数据太多来不及处理导致内存堆压造成，进而造成蛋疼的OOM
+- 2.demo，以Observerable来说为例子
+    `Observable
+                .create(new ObservableOnSubscribe<Integer>() {
+                    @Override
+                    public void subscribe(ObservableEmitter<Integer> e) throws Exception {
+                        int i = 0;
+                        while (true) {
+                            i++;
+                            e.onNext(i);
+                        }
+                    }
+                })
+                .subscribeOn(Schedulers.newThread())
+                .observeOn(Schedulers.newThread())
+                .subscribe(new Consumer<Integer>() {
+                    @Override
+                    public void accept(Integer integer) throws Exception {
+                        Thread.sleep(5000);
+                        System.out.println(integer);
+                    }
+                });`
+可以看到Observable一直不断的在发射数据，而下面的subscribe一直在处理数据，以延迟五秒假设为处理时间，这样一开始是没有问题，但随着时间变长，下游可能当integer==50的时候就已经报了OOM，而上游的i可能已经到达了100000，剩下99950的数据没有处理而堆积在内存当中，直接导致内存溢出，game over
+- 3.解决方案
+
+	rxjava2已经考虑到了这个问题，这是rxjava没有处理的，故而有了Flowable这个类来代替Observable，但是Flowable处理比Observable慢，因为它要操作背压的逻辑；在创建Flowable处理背压有五种策略(BackpressureStrategy枚举类)，其中MISSING策略处理方式是当上游发送数据的速度快于下游接收数据的速度，且运行在不同的线程中时，Flowable通过自身特有的异步缓存池，来缓存没来得及处理的数据，缓存池的容量上限为128，但当超出缓存容量时，还是会OOM，即使缓存池设置得再大；ERROR策略是当缓存池当中数据超限了，就会报MissingBackpressureException；DROP策略是当缓存池满了，会删除上游发送的数据，但有时候删除的时候可能还会有其他操作引发内存突然爆了，也是会OOM；LATEST策略和DROP很像，都一样会删除上游发送的数据，但是LATEST会保证最新发射的一条数据不被删除，BUFFER策略其实就跟啥策略没做一样，缓存池满了就抛OOM。所以，以上策略如何去用，看具体需求和效果。
+
+- 4.背压处理思考
+
+	不一定是使用Observable会产生背压，当产生背压的时候，可以从以下角度思考：
+	1、首先从业务角度出发，看是需要老数据还是要最新的数据，可以先将数据用List变量缓存，当List到达一定长度后，要么取出最老的数据，要么取出最新的数据，然后去处理，最后清空List重新来过；
+	2、在发送数据之前，先排除所有不合理，只保留一个，让上游数据只能发送一条数据，保证数据唯一性
+	3、例用递归方式，上游发送数据到下游后，停止上游数据发送，下游处理完做个回调递归到上游，让上游发送第二条数据，但这种方式可能会丢失很多数据，这样方式相当于自己手动做个延迟，每隔多少秒发一条
+
+# 参考文献 #
+[Rxjava2入门教程五：Flowable背压支持——对Flowable最全面而详细的讲解](https://www.jianshu.com/p/ff8167c1d191/)
 
 
+### 12.每日一题：类的加载流程
+
+- 1.Android类加载器的基类是BaseDexClassLoader，它有派生出两个子类加载器
+
+
+	PathClassLoader: 主要用于系统和app的类加载器,其中optimizedDirectory为null, 采用默认目录/data/dalvik-cache/
+
+    DexClassLoader: 可以从包含classes.dex的jar或者apk中，加载类的类加载器, 可用于执行动态加载, 但必须是app私有可写目录来缓存odex文件. 能够加载系统没有安装的apk或者jar文件，因此很多插件化方案都是采用DexClassLoader
+- 2.java 中的双亲委托模式
+
+
+	通俗的讲，就是某个特定的类加载器 ClassLoader 在接到加载类的请求时，首先将加载任务委托给父类加载器，依次递归，如果父类加载器可以完成类加载任务，就成功返回；只有父类加载器无法完成此加载任务时，才自己去加载。
+
+	为了更好的理解双亲委托模式，我们先自定义一个ClassLoader，假设我们使用这个自定义的ClassLoader加载 java.lang.String，那么这里String是否会被这个ClassLoader加载呢？
+
+	事实上java.lang.String这个类并不会被我们自定义的classloader加载，而是由bootstrap classloader进行加载，为什么会这样？
+
+	实际上这就是双亲委托模式的原因，因为在任何一个自定义ClassLoader加载一个类之前，它都会先 委托它的父亲ClassLoader进行加载，只有当父亲ClassLoader无法加载成功后，才会由自己加载。
+
+	而在上面的例子中，因为 java.lang.String是属于java核心API的一个类，所以当使用自定义的classloader加载它的时候，该 ClassLoader会先委托它的父亲ClassLoader进行加载（bootstrap classloader），所以并不会被我们自定义的ClassLoader加载
+
+	![](http://img.blog.csdn.net/20140105211344671)
+	
+	其中 《验证->准备->解析》过程为连接过程
+# 参考文献 #
+[Java类加载过程](https://www.cnblogs.com/xiaoxian1369/p/5498817.html)
